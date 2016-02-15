@@ -6,21 +6,22 @@ from sys import argv
 from sys import stderr
 import json
 from datetime import datetime
-import re
+from urlparse import urlparse
 
 
 try:
-  from keystoneclient.v2_0 import client as keystone_client
-  from keystoneclient.auth.identity import v2
-  from novaclient import client
+  from keystoneclient.v3 import client as keystone_client
+  from keystoneauth1 import loading
+  from keystoneauth1 import session
+  from novaclient import client as nova_client
 except ImportError:
   print 'ZBX_NOTSUPPORTED\x00 Failed to import openstack python modules'
   exit(1)
 
 def get_host_port(url):
-    m = re.match('htt.?://(.*):(\d+)',url)
-    if m:
-        return (m.group(1),m.group(2))
+    parsed = urlparse(url)
+    if parsed:
+      return (parsed.hostname, parsed.port)
 
 def print_json(data):
     print json.dumps({'data':data},sort_keys=True,indent=7,separators=(',',':'))
@@ -30,15 +31,26 @@ def discover_endpoints(auth_url, tenant_name, username, password):
 
     services = []
     for e in conn.endpoints.list():
-        host = get_host_port(e.publicurl)
+        if e.interface != 'public':
+            continue
+        host = get_host_port(e.url)
         if e.enabled:
             service = conn.services.get(e.service_id)
-            services.append({'{#OS_SERVICENAME}':service.name, '{#OS_SERVICEURL}':e.publicurl, '{#OS_SERVICEHOST}':host[0], '{#OS_SERVICEPORT}':host[1] })
+            services.append({'{#OS_SERVICENAME}':service.name, '{#OS_SERVICEURL}':e.url, '{#OS_SERVICEHOST}':host[0], '{#OS_SERVICEPORT}':host[1] })
 
     print_json(services)
 
 def discover_hypervisors(auth_url, tenant_name, username, password):
-    conn = nova = client.Client(2, username, password, tenant_name, auth_url)
+    loader = loading.get_plugin_loader('password')
+    print loader.get_options()
+    auth = loader.load_from_options(auth_url=auth_url,
+                                    username=username,
+                                    password=password,
+                                    project_name=tenant_name,
+                                    user_domain_name='default',
+                                    project_domain_name='default')
+    sess = session.Session(auth=auth)
+    conn = nova_client.Client(2, session=sess)
 
     hypervisors = []
     for h in conn.hypervisors.list(detailed=True):
@@ -49,12 +61,12 @@ def discover_hypervisors(auth_url, tenant_name, username, password):
 
 if __name__ == '__main__':
 
-    if (len(argv) != 6):    
+    if (len(argv) != 6):
         print """Usage: %s TYPE AUTH_URL TENANT USERNAME PASSWORD
           where
 
           TYPE      - one of the following: endpoints hypervisors
-          AUTH_URL  - URL to keystone 
+          AUTH_URL  - URL to keystone
           TENANT    - tenant name
           USERNAME  - user name
           PASSWORD  - password for user
@@ -70,6 +82,3 @@ if __name__ == '__main__':
     else:
       print 'ZBX_NOTSUPPORTED\x00 Unknown type: %s' % TYPE
       exit(1)
-
-
-
